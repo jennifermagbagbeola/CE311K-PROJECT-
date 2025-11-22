@@ -78,13 +78,16 @@ def load_and_clean_data():
 # MAIN APP
 # -----------------------------------------------------------
 
-st.title("🏗️ CE311K Austin Construction Dashboard")
+st.title("Sort & Report")
 
 st.write(
-    "Interactive dashboard showing real Austin construction permit data. "
-    "Use the filters in the sidebar to explore trends by year, location, "
-    "and permit type. This deployed version uses a recent subset of the "
-    "data to run reliably on Streamlit Cloud."
+    "Welcome To the User Interface for Sort & Report. This app loads Austin construction permits directly from "
+    "the city of Austin open data website and lets you filter the permit data."
+)
+
+st.info(
+    "⚠️ A lot of data is being filtered so this may take a while, especially the first time you use it! "
+    
 )
 
 df = load_and_clean_data()
@@ -226,3 +229,4 @@ else:
     ]
     existing_cols = [c for c in show_cols if c in filtered.columns]
     st.dataframe(filtered[existing_cols].head(200))
+
