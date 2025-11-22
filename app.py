@@ -1,3 +1,4 @@
+#this is the u[pdated version of app.py thats doesnt do all the data 
 import streamlit as st
 import pandas as pd
 import numpy as np
