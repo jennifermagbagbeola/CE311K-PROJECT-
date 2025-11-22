@@ -1,186 +1,227 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 
-# ------------- DATA LOADING & CLEANING ------------- #
-@st.cache_data
+# -----------------------------------------------------------
+# CONFIG
+# -----------------------------------------------------------
+
+DATA_URL = "https://data.austintexas.gov/api/views/3syk-w9eu/rows.csv?accessType=DOWNLOAD"
+
+# Approximate Austin boundaries
+AUSTIN_LAT_MIN = 30.0
+AUSTIN_LAT_MAX = 30.6
+AUSTIN_LON_MIN = -98.0
+AUSTIN_LON_MAX = -97.0
+
+
+# -----------------------------------------------------------
+# DATA LOADING (CACHED)
+# -----------------------------------------------------------
+
+@st.cache_data(show_spinner="Loading and cleaning Austin construction data…")
 def load_and_clean_data():
-    url = "https://data.austintexas.gov/api/views/3syk-w9eu/rows.csv?accessType=DOWNLOAD"
+    """
+    Load a manageable subset of the Austin construction permits dataset
+    and clean it for use in the app.
 
-    # This will download the data from the website (like Colab did)
-    df = pd.read_csv(url, low_memory=False)
+    On Streamlit Cloud we limit the number of rows to avoid running out
+    of memory. Your local Colab / laptop version can still use the full
+    dataset.
+    """
 
-    # Convert Issued Date to datetime and extract Year
-    df["Date"] = pd.to_datetime(df["Issued Date"], errors="coerce")
-    df["Year"] = df["Date"].dt.year
-
-    # Define Austin bounds
-    austin_lat_min = 30.0
-    austin_lat_max = 30.6
-    austin_lon_min = -98.0
-    austin_lon_max = -97.0
-
-    valid_latitude = (df["Latitude"] > austin_lat_min) & (df["Latitude"] < austin_lat_max)
-    valid_longitude = (df["Longitude"] > austin_lon_min) & (df["Longitude"] < austin_lon_max)
-
-    valid_coordinates = valid_latitude & valid_longitude
-    austin_construction = df[valid_coordinates].copy()
-
-    # Drop rows with missing coordinates after filtering
-    austin_construction = austin_construction.dropna(subset=["Latitude", "Longitude"])
-
-    return austin_construction
-
-
-# ------------- APP UI ------------- #
-st.title("Sort & Report ")
-
-st.write(
-    "Welcome To the User Interface for Sort & Report. This app loads Austin construction permits directly from"
-    "the city of Austin open data website and lets you filter the permit data."
-)
-
-st.info(
-    "⚠️ A lot of data is being filtered so this may take a while, especially the first time you use it! "
-    
-)
-
-# Show a spinner while data loads
-with st.spinner("⏳ Loading Austin construction permit data..."):
-    df = load_and_clean_data()
-
-st.success(f"🎉 Data loaded! Total permits after cleaning: {len(df):,}")
-
-# ------------- FILTERS (Sidebar) ------------- #
-st.sidebar.header("Filters")
-
-min_year = int(df["Year"].min())
-max_year = int(df["Year"].max())
-
-year_range = st.sidebar.slider(
-    "Filter by Year Range",
-    min_value=min_year,
-    max_value=max_year,
-    value=(max_year - 5, max_year),
-)
-
-# Permit Type Filter if it exists
-permit_column = None
-for col in df.columns:
-    if col.lower().strip() == "permit type":
-        permit_column = col
-        break
-
-selected_types = None
-if permit_column:
-    permit_types = sorted(df[permit_column].dropna().unique().tolist())
-    selected_types = st.sidebar.multiselect(
-        "Permit Type",
-        options=permit_types,
-        default=permit_types[:5] if len(permit_types) > 5 else permit_types,
+    # Limit the number of rows to keep memory usage safe on Streamlit Cloud.
+    # The dataset is sorted so the newest permits are first; this keeps
+    # recent years.
+    df = pd.read_csv(
+        DATA_URL,
+        low_memory=False,
+        nrows=400_000,  # adjust if needed; ~recent years only
+        usecols=[
+            "Permit Num",
+            "Permit Type",
+            "Issued Date",
+            "Project Name",
+            "Latitude",
+            "Longitude",
+            "Total Job Valuation",
+        ],
     )
 
-# Apply Filtering
+    # Parse dates and extract year
+    df["Issued Date"] = pd.to_datetime(df["Issued Date"], errors="coerce")
+    df = df.dropna(subset=["Issued Date"])
+    df["Year"] = df["Issued Date"].dt.year
+
+    # Keep only rows with valid coordinates
+    df["Latitude"] = pd.to_numeric(df["Latitude"], errors="coerce")
+    df["Longitude"] = pd.to_numeric(df["Longitude"], errors="coerce")
+
+    df = df.dropna(subset=["Latitude", "Longitude"])
+    df = df[
+        (df["Latitude"] >= AUSTIN_LAT_MIN)
+        & (df["Latitude"] <= AUSTIN_LAT_MAX)
+        & (df["Longitude"] >= AUSTIN_LON_MIN)
+        & (df["Longitude"] <= AUSTIN_LON_MAX)
+    ]
+
+    # Clean up permit types (drop NaNs)
+    df["Permit Type"] = df["Permit Type"].astype("category")
+
+    return df
+
+
+# -----------------------------------------------------------
+# MAIN APP
+# -----------------------------------------------------------
+
+st.title("🏗️ CE311K Austin Construction Dashboard")
+
+st.write(
+    "Interactive dashboard showing real Austin construction permit data. "
+    "Use the filters in the sidebar to explore trends by year, location, "
+    "and permit type. This deployed version uses a recent subset of the "
+    "data to run reliably on Streamlit Cloud."
+)
+
+df = load_and_clean_data()
+
+st.sidebar.header("Filters")
+
+# Year filter
+min_year = int(df["Year"].min())
+max_year = int(df["Year"].max())
+year_range = st.sidebar.slider(
+    "Year range",
+    min_value=min_year,
+    max_value=max_year,
+    value=(max(max_year - 10, min_year), max_year),
+)
+
+# Permit type filter
+permit_types_all = sorted(df["Permit Type"].dropna().unique())
+default_permits = permit_types_all  # show all by default
+selected_permit_types = st.sidebar.multiselect(
+    "Permit types",
+    options=permit_types_all,
+    default=default_permits,
+)
+
+# Apply filters
 filtered = df[
-    (df["Year"] >= year_range[0]) &
-    (df["Year"] <= year_range[1])
+    (df["Year"].between(year_range[0], year_range[1]))
+    & (df["Permit Type"].isin(selected_permit_types))
 ]
 
-if selected_types:
-    filtered = filtered[filtered[permit_column].isin(selected_types)]
+st.write(
+    f"Showing **{len(filtered):,}** permits from "
+    f"**{year_range[0]}–{year_range[1]}** for "
+    f"permit types: {', '.join(selected_permit_types) if selected_permit_types else 'none'}."
+)
 
-st.write(f"📍 Permits matching filters: **{len(filtered):,}**")
+# -----------------------------------------------------------
+# MAP OF FILTERED PERMITS
+# -----------------------------------------------------------
 
-# Downsample for plotting so it doesn’t lag with millions of points
-max_points = 50000
-if len(filtered) > max_points:
-    plot_data = filtered.sample(max_points, random_state=0)
-    st.caption(f"🔍 Showing a random sample of {max_points:,} points.")
+st.subheader("🗺️ Map of Austin Construction Permits (Filtered)")
+
+if filtered.empty:
+    st.warning("No permits match the current filters.")
 else:
-    plot_data = filtered
+    fig_map, ax_map = plt.subplots(figsize=(6, 6))
+    ax_map.scatter(
+        filtered["Longitude"],
+        filtered["Latitude"],
+        s=2,
+        alpha=0.4,
+    )
+    ax_map.set_xlabel("Longitude")
+    ax_map.set_ylabel("Latitude")
+    ax_map.set_title("Austin Construction Permits (Filtered)")
+    ax_map.grid(True, linestyle="--", alpha=0.3)
+    st.pyplot(fig_map)
 
-# ------------- MAPS ------------- #
-st.subheader("🗺️ Map of Austin Construction Permits")
+# -----------------------------------------------------------
+# YEARLY SPATIAL DISTRIBUTION BY PERMIT TYPE
+# -----------------------------------------------------------
 
-fig, ax = plt.subplots(figsize=(6, 6))
-ax.scatter(plot_data["Longitude"], plot_data["Latitude"], s=1, alpha=0.3)
-ax.set_xlabel("Longitude")
-ax.set_ylabel("Latitude")
-ax.set_title("Austin Construction Permits")
-st.pyplot(fig)
-
-# ------------- TABLE PREVIEW ------------- #
-st.subheader("📋 Sample of Filtered Permits")
-st.dataframe(filtered.head(200))
-
-# ------------- YEARLY MAP BY PERMIT TYPE ------------- #
 st.subheader("Yearly Spatial Distribution by Permit Type")
 
 st.write(
     "Select a year below to see how different permit types are distributed "
-    "across Austin for that year. Each color corresponds to a permit type "
-    "(BP, DS, EP, MP, PP)."
-    "It would be too lengthy to do all 5 permit types for all 54 years so "
-    "it's grouped by decades pre-200,then every 5 years, then each year "
-    "indivudually from 2019-2025"
+    "across Austin for that year. Each color corresponds to a permit type."
 )
 
-# Make sure coordinates and permit types are clean
-df_yearly = df.copy()
-df_yearly["Latitude"] = pd.to_numeric(df_yearly["Latitude"], errors="coerce")
-df_yearly["Longitude"] = pd.to_numeric(df_yearly["Longitude"], errors="coerce")
-df_yearly = df_yearly.dropna(subset=["Latitude", "Longitude", "Permit Type", "Year"])
-
-# Build a color map for each permit type (like in your Colab)
-permit_types_all = sorted(df_yearly["Permit Type"].dropna().unique())
-cmap_object = plt.colormaps.get_cmap("tab10")
-color_map = {}
-
-if len(permit_types_all) == 1:
-    # Only one permit type → just pick the middle color
-    color_map[permit_types_all[0]] = cmap_object(0.5)
-elif len(permit_types_all) > 1:
-    for i, pt in enumerate(permit_types_all):
-        color_map[pt] = cmap_object(i / (len(permit_types_all) - 1))
-
-# Let the user pick a year (instead of looping all years at once)
-year_options = sorted(df_yearly["Year"].dropna().unique())
-default_year_index = len(year_options) - 1  # default to most recent year
-
-selected_year = st.selectbox(
-    "Choose a year to visualize permit-type clusters:",
-    year_options,
-    index=default_year_index,
-)
-
-year_data = df_yearly[df_yearly["Year"] == selected_year]
-
-st.write(f"Permits in {selected_year}: **{len(year_data):,}**")
-
-if year_data.empty:
-    st.warning("No data available for this year.")
+if df.empty:
+    st.warning("No data available to plot.")
 else:
-    fig2, ax2 = plt.subplots(figsize=(6, 6))
+    year_options = sorted(df["Year"].dropna().unique())
+    default_year_index = len(year_options) - 1  # most recent year
 
-    # Plot each permit type in its own color (like your partner's loop)
-    for permit_type in sorted(year_data["Permit Type"].dropna().unique()):
-        type_data = year_data[year_data["Permit Type"] == permit_type]
-        ax2.scatter(
-            type_data["Longitude"],
-            type_data["Latitude"],
-            s=5,
-            alpha=0.6,
-            color=color_map.get(permit_type, "gray"),
-            label=permit_type,
-        )
+    selected_year = st.selectbox(
+        "Choose a year to visualize:",
+        options=year_options,
+        index=default_year_index,
+    )
 
-    ax2.set_title(f"Construction Permits in Austin – {selected_year}")
-    ax2.set_xlabel("Longitude")
-    ax2.set_ylabel("Latitude")
-    ax2.grid(True, linestyle="--", alpha=0.7)
-    ax2.legend(title="Permit Type", bbox_to_anchor=(1.05, 1), loc="upper left")
-    plt.tight_layout()
+    year_data = df[df["Year"] == selected_year]
 
-    st.pyplot(fig2)
+    st.write(f"Permits in {selected_year}: **{len(year_data):,}**")
 
+    if year_data.empty:
+        st.warning("No data for this year.")
+    else:
+        # Build a color map per permit type
+        year_permit_types = sorted(year_data["Permit Type"].dropna().unique())
+        cmap_object = plt.colormaps.get_cmap("tab10")
+        color_map = {}
+
+        if len(year_permit_types) == 1:
+            color_map[year_permit_types[0]] = cmap_object(0.5)
+        elif len(year_permit_types) > 1:
+            for i, pt in enumerate(year_permit_types):
+                color_map[pt] = cmap_object(i / (len(year_permit_types) - 1))
+
+        fig_year, ax_year = plt.subplots(figsize=(6, 6))
+        for permit_type in year_permit_types:
+            type_data = year_data[year_data["Permit Type"] == permit_type]
+            ax_year.scatter(
+                type_data["Longitude"],
+                type_data["Latitude"],
+                s=5,
+                alpha=0.6,
+                color=color_map.get(permit_type, "gray"),
+                label=permit_type,
+            )
+
+        ax_year.set_title(f"Construction Permits in Austin – {selected_year}")
+        ax_year.set_xlabel("Longitude")
+        ax_year.set_ylabel("Latitude")
+        ax_year.grid(True, linestyle="--", alpha=0.7)
+        ax_year.legend(title="Permit Type", bbox_to_anchor=(1.05, 1), loc="upper left")
+        plt.tight_layout()
+        st.pyplot(fig_year)
+
+# -----------------------------------------------------------
+# TABLE PREVIEW
+# -----------------------------------------------------------
+
+st.subheader("📋 Sample of Filtered Permits")
+
+if filtered.empty:
+    st.info("No data to display. Try widening your filters.")
+else:
+    show_cols = [
+        "Permit Num",
+        "Permit Type",
+        "Issued Date",
+        "Project Name",
+        "Total Job Valuation",
+        "Latitude",
+        "Longitude",
+        "Year",
+    ]
+    existing_cols = [c for c in show_cols if c in filtered.columns]
+    st.dataframe(filtered[existing_cols].head(200))
